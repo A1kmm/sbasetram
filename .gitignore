@@ -1,0 +1,8 @@
+*.hi
+*.hs.html
+hpc*.html
+*~
+*.o
+*.tix
+gmatim
+*.fasta
