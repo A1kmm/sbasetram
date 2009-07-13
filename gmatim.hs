@@ -7,7 +7,8 @@ import Data.List
 import Control.Monad
 import qualified Data.ByteString as B
 import Control.Exception
-import Debug.Trace
+import System.Console.GetOpt
+import System.Environment
 
 data TSMMatrix = TSMMatrix {
       matrixFreqs :: A.UArray (Int, Int) Double,
@@ -61,29 +62,31 @@ summariseMatrix freqs =
                 }
 summariseMatrices = map (\(n, m) -> (n, summariseMatrix m))
 
-searchForMatrices bs mats =
+searchForMatrices s bs mats =
     let
         l = B.length bs
     in
-      concatMap (checkForMatchingMatricesAt bs mats) [0..(l-1)]
+      concatMap (checkForMatchingMatricesAt s bs mats) [0..(l-1)]
 
-checkForMatchingMatricesAt bs mats start =
-   mapMaybe (\(i,m) -> (liftM $ const (i, start)) (checkMatrixMatch bs start m)) mats
+checkForMatchingMatricesAt s bs mats start =
+   mapMaybe (\(i,m) -> (liftM $ const (i, start)) (checkMatrixMatch s bs start m)) mats
 
-checkMatrixMatch :: B.ByteString -> Int -> TSMMatrix -> Maybe Double
-checkMatrixMatch bs start mat =
+checkMatrixMatch :: Cutoffs -> B.ByteString -> Int -> TSMMatrix -> Maybe Double
+checkMatrixMatch s bs start mat =
     let
         lrem = (B.length bs) - start
         (_, lmat) = A.bounds (matrixInformationVector mat)
     in
       if lmat < lrem
       then
-          unsafeCheckMatrixMatch bs start mat lmat
+          unsafeCheckMatrixMatch s bs start mat lmat
       else
           Nothing
 
-mssCutoff = 0.75
-cssCutoff = 0.7
+data Cutoffs = Cutoffs {
+      mssCutoff :: Double,
+      cssCutoff :: Double
+};
 
 normaliseScore minScore maxScore currentScore =
     (currentScore - minScore) / (maxScore - minScore)
@@ -92,30 +95,81 @@ computeScoreOver :: [Int] -> B.ByteString -> Int -> A.UArray (Int, Int) Double -
 computeScoreOver idxs seqbs offset freqs iv =
     sum $ map (\idx -> (freqs!((fromIntegral $ B.index seqbs (idx + offset)), idx)) * (iv!idx)) idxs
 
-unsafeCheckMatrixMatch :: B.ByteString -> Int -> TSMMatrix -> Int -> Maybe Double
-unsafeCheckMatrixMatch bs start mat n =
+unsafeCheckMatrixMatch :: Cutoffs -> B.ByteString -> Int -> TSMMatrix -> Int -> Maybe Double
+unsafeCheckMatrixMatch s bs start mat n =
     let
         css = normaliseScore (coreMinScore mat) (coreMaxScore mat)
                 (computeScoreOver (matrixCore mat) bs start (matrixFreqs mat) (matrixInformationVector mat))
         mss = normaliseScore (matrixMinScore mat) (matrixMaxScore mat)
               (computeScoreOver [0..n] bs start (matrixFreqs mat) (matrixInformationVector mat))
     in
-      if {- trace ((showString "CSS = " . shows css)"") $ -} css > cssCutoff && mss > mssCutoff
+      if {- trace ((showString "CSS = " . shows css)"") $ -} css > (cssCutoff s) && mss > (mssCutoff s)
       then
-          Just mssCutoff
+          Just mss
       else
           Nothing
 
-main =
+data ProgramOptions = ProgramOptions {
+      poshowHelp :: Bool,
+      pocssCutoff :: Maybe Double,
+      pomssCutoff :: Maybe Double,
+      pofastaFile :: Maybe String,
+      pofsaFile :: Maybe String
+    }
+defaultOptions = ProgramOptions { poshowHelp = False, pocssCutoff = Nothing, pomssCutoff = Nothing,
+                                  pofastaFile = Nothing, pofsaFile = Nothing }
+
+options :: [OptDescr (ProgramOptions -> ProgramOptions)]
+options =
+    [ 
+      Option ['h'] ["help"] (NoArg (\opts -> opts {poshowHelp = True } )) "Displays this help message"
+    , Option ['c'] ["css-cutoff"] (ReqArg (\val -> \opts -> opts { pocssCutoff = Just (read val) }) "DOUBLE") "Cut-off for core similarity score"
+    , Option ['m'] ["mss-cutoff"] (ReqArg (\val -> \opts -> opts { pomssCutoff = Just (read val) }) "DOUBLE") "Cut-off for matrix similarity score"
+    , Option ['M'] ["matrix-file"] (ReqArg (\val -> \opts -> opts { pofastaFile = Just val }) "FILE") "File contain TF matrices"
+    , Option ['f'] ["probe-file"] (ReqArg (\val -> \opts -> opts { pofsaFile = Just val }) "FILE") "File containing all probe sequences"
+    ]
+usageString = "Usage: gmatim [opts...]"
+
+commandLineInfo x = do
+  putStrLn x
+  putStrLn (usageInfo usageString options)
+
+main = do
+  args <- getArgs
+  case getOpt RequireOrder options args of
+    (o,_,[]) ->
+        let
+            opts = foldl (\opt -> \f -> f opt) defaultOptions o
+        in
+          case opts of
+            ProgramOptions { poshowHelp = True } ->
+                commandLineInfo "Help information"
+            ProgramOptions { pocssCutoff = Nothing } ->
+                commandLineInfo "CSS Cutoff not specificed"
+            ProgramOptions { pomssCutoff = Nothing } ->
+                commandLineInfo "MSS Cutoff not specificed"
+            ProgramOptions { pofastaFile = Nothing } ->
+                commandLineInfo "FASTA (matrix) file not specificed"
+            ProgramOptions { pofsaFile = Nothing } ->
+                commandLineInfo "FSA (sequence) file not specificed"
+            ProgramOptions { pofastaFile = Just fasf, pofsaFile = Just fsaf, pomssCutoff = Just mssco, pocssCutoff = Just cssco } ->
+                gmatimMain fasf fsaf (Cutoffs mssco cssco)
+    (_, _, e) -> commandLineInfo $ "Command line parse error:\n" ++ (concat e)
+-- "/home/andrew/Documents/TSM/matrices.fasta"
+-- "/home/andrew/tgz/yeast_Young_6k.fsa"
+-- defaultCutoffs = Cutoffs { mssCutoff = 0.75, cssCutoff = 0.7 }
+
+
+gmatimMain fastaFile fsaFile cutoffs =
     do
-      matricesAsWeights <- loadTRANSFACMatrices "/home/andrew/Documents/TSM/matrices.fasta"
-      fsaData <- loadFSAData "/home/andrew/tgz/yeast_Young_6k.fsa"
+      matricesAsWeights <- loadTRANSFACMatrices fastaFile
+      fsaData <- loadFSAData fsaFile
       let
           matrixSummary = summariseMatrices matricesAsWeights
         in
           forM_ fsaData $ \(probe, seqbs) ->
           let
-              matches = nub (map fst $ searchForMatrices seqbs matrixSummary)
+              matches = nub (map fst $ searchForMatrices cutoffs seqbs matrixSummary)
             in
               if null matches
               then
