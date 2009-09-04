@@ -6,3 +6,6 @@ hpc*.html
 *.tix
 gmatim
 *.fasta
+sbasetram
+.hpc
+pfilter
