@@ -14,7 +14,7 @@ options :: [OptDescr (ProgramOptions -> ProgramOptions)]
 options =
     [
      Option ['h'] ["help"] (NoArg (\opts -> opts {poshowHelp = True } )) "Displays this help message",
-     Option ['p'] ["posterior-cutoff"] (ReqArg (\val opts -> opts { poPosteriorCutoff = Just (read val)} ) "DOUBLE") "Minimum value required for log posterior probability in order for data to be included in output",
+     Option ['p'] ["posterior-cutoff"] (ReqArg (\val opts -> opts { poPosteriorCutoff = Just (read val)} ) "DOUBLE") "Minimum value required for posterior probability in order for data to be included in output",
      Option ['s'] ["site-file"] (ReqArg (\val opts -> opts {poSiteFile = Just val}) "FILE") "File containing the sites and probabilities identfied by sbasetram"
     ]
 
@@ -92,6 +92,6 @@ main = do
                 commandLineInfo "Site file not specified"
             ProgramOptions { poPosteriorCutoff = Just postco, poSiteFile = Just sitefile } ->
                 do
-                  pfilter postco sitefile
+                  pfilter (log postco) sitefile
                   return ()
     (_, _, e) -> commandLineInfo $ "Command line parse error:\n" ++ (concat e)
