@@ -1,3 +1,4 @@
+{-# LANGUAGE RankNTypes,BangPatterns #-}
 import qualified Data.Array.Unboxed as A
 import Data.Array.IArray ((!))
 import Data.Maybe
@@ -6,43 +7,46 @@ import FSAParser
 import Data.List
 import Control.Monad
 import qualified Data.ByteString as B
-import Control.Exception
 import System.Console.GetOpt
 import System.Environment
 import Numeric.GSL.Special.Gamma
 import qualified Data.Array.ST as S
-import qualified Control.Monad.ST as S
-import qualified Data.STRef as S
+import qualified Control.Monad.ST.Strict as S
+import qualified Data.STRef.Strict as S
 import Data.Word
+import Data.Ord
 
 data TSMMatrix = TSMMatrix {
+      -- First index is the base, second is the position from start of motif...
       matrixFreqs :: A.UArray (Int, Int) Double,
-      matrixProbs :: A.UArray (Int, Int) Double
+      -- Note: log transformed
+      matrixProbs :: A.UArray (Word8, Int) Double
     }
 
 prependProbsOneEntry freqs n i l j =
     let
-        f = freqs!(j, i)
-        p = (beta (f + 2.0) (n - f + 1.0)) / (beta (f + 1.0) (n - f + 1.0))
+        f = freqs!(fromIntegral j, i)
+        logp = log ((beta (f + 2.0) (n - f + 1.0)) / (beta (f + 1.0) (n - f + 1.0)))
     in
-      ((j, i), p):l
+      ((j, i), logp):l
 
 prependProbsOnePosition freqs l i =
     let
-        n = sum (\j -> freqs!(j, i)) [0..3]
+        n = sum $ map (\j -> freqs!(j, i)) [0..3]
     in
       foldl' (prependProbsOneEntry freqs n i) l [0..3]
 
 computeProbs freqs = 
     let
-        (_, n) = A.bounds freqs
+        (_, (_, n)) = A.bounds freqs
     in
-      A.array $ foldl' (prependProbsOnePosition freqs) [] [0..(n-1)]
+      A.array ((0, 0), (3, n)) $ (foldl' (prependProbsOnePosition freqs) [] [0..n])
 
-summariseMatrix freqs = TSMMatrix {
-                          matrixFreqs = freqs,
-                          matrixProbs = computeProbs freqs
-                        }
+summariseMatrix freqs =
+    TSMMatrix {
+                matrixFreqs = freqs,
+                matrixProbs = computeProbs freqs
+              }
 
 summariseMatrices = map (\(n, m) -> (n, summariseMatrix m))
 
@@ -53,7 +57,7 @@ byteStringPairsForM s f =
     case B.uncons s of
       Nothing -> return ()
       Just (w1, s1) ->
-          snd $ B.foldl (\(wp, m) -> \w -> m >> (w, f wp w)) (w1, return ()) s
+          snd $ B.foldl (\(wp, m) w -> (w, m >> f wp w)) (w1, return ()) s1
 
 modifyMArrayAtIdx :: (Monad m, S.MArray a e m, S.Ix i) => a i e -> i -> (e -> e) -> m ()
 modifyMArrayAtIdx a idx f =
@@ -61,23 +65,33 @@ modifyMArrayAtIdx a idx f =
       e <- S.readArray a idx
       S.writeArray a idx (f e)
 
+countBackground :: [(String, B.ByteString)] -> forall s . S.ST s (A.UArray Word8 Int, Int, A.UArray (Word8, Word8) Int, Int)
+
+strictIncrement !x = x + 1
+
+modifySTRef' r f =
+    do
+      lastv <- S.readSTRef r
+      let !nextv = f lastv
+      S.writeSTRef r nextv
+
 countBackground probes =
     do
       basecount <- S.newSTRef 0
       transcount <- S.newSTRef 0
-      bases <- (S.newArray 4 0)::m S.STUArray Int Int
-      transitions <- (S.newArray 4 0)::m S.STUArray (Int, Int) Int
+      bases <- (S.newArray (0, 3) 0) ::S.ST s (S.STUArray s Word8 Int)
+      transitions <- (S.newArray ((0, 0), (3, 3)) 0)::S.ST s (S.STUArray s (Word8, Word8) Int)
 
-      forM probes $ \probe ->
+      forM probes $ \(_, probe) ->
           do
             byteStringForM probe $ \b ->
                 do
-                  S.modifySTRef basecount (+1)
-                  modifyMArrayAtIdx bases b (+1)
+                  modifySTRef' basecount (+1)
+                  modifyMArrayAtIdx bases (fromIntegral b) (+1)
             byteStringPairsForM probe $ \bp -> \b ->
                 do
-                  S.modifySTRef transcount (+1)
-                  modifyMArrayAtIdx transitions (bp, b) (+1)
+                  modifySTRef' transcount strictIncrement
+                  modifyMArrayAtIdx transitions ((fromIntegral bp), (fromIntegral b)) (+1)
 
       fbases <- S.unsafeFreeze bases
       ftransitions <- S.unsafeFreeze transitions
@@ -85,60 +99,85 @@ countBackground probes =
       ftranscount <- S.readSTRef transcount
       return (fbases, fbasecount, ftransitions, ftranscount)
 
+computeBackgroundProbabilities :: [(String, B.ByteString)] -> (A.UArray Word8 Double, A.UArray (Word8, Word8) Double)
 computeBackgroundProbabilities probes =
     let
         (bases, nbases, transitions, ntransitions) = S.runST $ countBackground probes
         baseprobs = (A.amap ((/ (fromIntegral nbases)) . fromIntegral) bases)
-        condprobs = A.array $ concatMap (\i -> (map (\j -> ((i,j), (fromIntegral (transitions!(i, j))) / (baseprobs!i))) [0..3])) [0..3]
+        condprobs = A.array ((0, 0), (3,3)) $
+                      foldl' (\l i ->
+                                  (foldl' (\l' j ->
+                                            ((i,j),
+                                            log ((fromIntegral (transitions!(i, j))) /
+                                                 (fromIntegral ntransitions) /
+                                                 (baseprobs!i))):l'
+                                          ) l [0..3]
+                                  )
+                             ) [] [0..3]
     in
       (baseprobs, condprobs)
 
-searchForMatrices s bs mats =
+buildPartialSumsForSeq :: A.UArray (Word8, Word8) Double -> B.ByteString -> A.UArray Int Double
+buildPartialSumsForSeq bgcond seqn =
+    let
+        n = B.length seqn
+    in
+      A.array (0, n-1) $ snd (
+                              foldl' (\(s, l) i ->
+                                          let s' = s + (bgcond ! ((B.index seqn (i-1)), (B.index seqn i)))
+                                          in (s', (i, s'):l)
+                                     ) (0, [(0, 0)]) [1..(n-1)]
+                             )
+
+searchForMatrices :: Params -> (A.UArray Word8 Double, A.UArray (Word8, Word8) Double) -> B.ByteString -> [(String, TSMMatrix)] -> [(String, Double)]
+searchForMatrices params (baseprobs, condprobs) bs mats =
     let
         l = B.length bs
+        bgsums = buildPartialSumsForSeq condprobs bs
     in
-      concatMap (checkForMatchingMatricesAt s bs mats) [0..(l-1)]
+      concatMap (checkForMatchingMatricesAt params baseprobs bgsums bs mats) [0..(l-1)]
 
-checkForMatchingMatricesAt s bs mats start =
-   mapMaybe (\(i,m) -> (liftM $ const (i, start)) (checkMatrixMatch s bs start m)) mats
+checkForMatchingMatricesAt :: Params -> A.UArray Word8 Double -> A.UArray Int Double -> B.ByteString -> [(String, TSMMatrix)] -> Int -> [(String, Double)]
+checkForMatchingMatricesAt params baseprobs bgsums bs mats start =
+   mapMaybe (\(i,m) -> liftM ((,)i) (checkMatrixMatch params bs baseprobs bgsums start m)) mats
 
-checkMatrixMatch :: Cutoffs -> B.ByteString -> Int -> TSMMatrix -> Maybe Double
-checkMatrixMatch s bs start mat =
+checkMatrixMatch :: Params -> B.ByteString -> A.UArray Word8 Double -> A.UArray Int Double -> Int -> TSMMatrix -> Maybe Double
+checkMatrixMatch params bs baseprobs bgsums start mat =
     let
         lrem = (B.length bs) - start
-        (_, lmat) = A.bounds (matrixInformationVector mat)
+        (_, (_, lmat)) = A.bounds (matrixFreqs mat)
     in
       if lmat < lrem
       then
-          unsafeCheckMatrixMatch s bs start mat lmat
+          unsafeCheckMatrixMatch params bs baseprobs bgsums start mat lmat
+      else
+          Nothing
+
+logplus a b =
+    let
+        c = if (abs a) > (abs b) then a else b
+    in
+      c + (log ((exp (a - c)) + (exp (b - c))))
+
+unsafeCheckMatrixMatch params bs baseprobs bgsums start mat lmat =
+    let
+        pdgivenh1 = sum (map (\i -> (matrixProbs mat) ! (B.index bs (i + start), i)) [0..lmat])
+        pdgivenh0 = bgsums!(start + lmat) - bgsums!start + baseprobs!(B.index bs start)
+        pdandh1 = pdgivenh1 + (logPriorProb params)
+        pdandh0 = pdgivenh0 + (logPriorNotProb params)
+        posterior = pdandh1 - (pdandh1 `logplus` pdandh0)
+    in
+      if posterior >= (logPosteriorCutoff params)
+      then
+         Just posterior
       else
           Nothing
 
 data Params = Params {
-      priorProb :: Double,
-      posteriorCutoff :: Double
+      logPriorProb :: Double,
+      logPosteriorCutoff :: Double,
+      logPriorNotProb :: Double
 }
-
-normaliseScore minScore maxScore currentScore =
-    (currentScore - minScore) / (maxScore - minScore)
-
-computeScoreOver :: [Int] -> B.ByteString -> Int -> A.UArray (Int, Int) Double -> A.UArray Int Double -> Double
-computeScoreOver idxs seqbs offset freqs iv =
-    sum $ map (\idx -> (freqs!((fromIntegral $ B.index seqbs (idx + offset)), idx)) * (iv!idx)) idxs
-
-unsafeCheckMatrixMatch :: Cutoffs -> B.ByteString -> Int -> TSMMatrix -> Int -> Maybe Double
-unsafeCheckMatrixMatch s bs start mat n =
-    let
-        css = normaliseScore (coreMinScore mat) (coreMaxScore mat)
-                (computeScoreOver (matrixCore mat) bs start (matrixFreqs mat) (matrixInformationVector mat))
-        mss = normaliseScore (matrixMinScore mat) (matrixMaxScore mat)
-              (computeScoreOver [0..n] bs start (matrixFreqs mat) (matrixInformationVector mat))
-    in
-      if {- trace ((showString "CSS = " . shows css)"") $ -} css > (cssCutoff s) && mss > (mssCutoff s)
-      then
-          Just mss
-      else
-          Nothing
 
 data ProgramOptions = ProgramOptions {
       poshowHelp :: Bool,
@@ -154,8 +193,8 @@ options :: [OptDescr (ProgramOptions -> ProgramOptions)]
 options =
     [
       Option ['h'] ["help"] (NoArg (\opts -> opts {poshowHelp = True } )) "Displays this help message"
-    , Option ['p'] ["posterior-cutoff"] (ReqArg (\val -> \opts -> opts { poPoteriorCutoff = Just (read val) }) "DOUBLE") "Minimum value required for posterior cut-off in order for data to be retained"
-    , Option ['0'] ["prior-prob"] (ReqArg (\val -> \opts -> opts { poPrior = Just (read val) }) "DOUBLE") "The prior probability that a given transcription factor is at any particular site"
+    , Option ['p'] ["posterior-cutoff"] (ReqArg (\val -> \opts -> opts { poPosteriorCutoff = Just (read val) }) "DOUBLE") "Minimum value required for log posterior probability in order for data to be retained"
+    , Option ['0'] ["prior-prob"] (ReqArg (\val -> \opts -> opts { poPrior = Just (read val) }) "DOUBLE") "The prior log-probability that a given transcription factor is at any particular site"
     , Option ['M'] ["matrix-file"] (ReqArg (\val -> \opts -> opts { pofastaFile = Just val }) "FILE") "File contain TF matrices"
     , Option ['f'] ["probe-file"] (ReqArg (\val -> \opts -> opts { pofsaFile = Just val }) "FILE") "File containing all probe sequences"
     ]
@@ -184,31 +223,31 @@ main = do
             ProgramOptions { pofsaFile = Nothing } ->
                 commandLineInfo "FSA (sequence) file not specified"
             ProgramOptions { pofastaFile = Just fasf, pofsaFile = Just fsaf, poPosteriorCutoff = Just postco, poPrior = Just prior } ->
-                gmatimMain fasf fsaf (Params prior postco)
+                sbasetramMain fasf fsaf (Params prior postco (log (1.0 - (exp prior))))
     (_, _, e) -> commandLineInfo $ "Command line parse error:\n" ++ (concat e)
 -- "/home/andrew/Documents/TSM/matrices.fasta"
 -- "/home/andrew/tgz/yeast_Young_6k.fsa"
 
-gmatimMain fastaFile fsaFile params =
+sbasetramMain fastaFile fsaFile params =
     do
       matricesAsWeights <- loadTRANSFACMatrices fastaFile
       fsaData <- loadFSAData fsaFile
       let
           matrixSummary = summariseMatrices matricesAsWeights
-          backgroundModel = buildBackgroundModel fsaData
+          backgroundModel = computeBackgroundProbabilities fsaData
         in
           forM_ fsaData $ \(probe, seqbs) ->
           let
-              allHits = searchForMatrices params seqbs matrixSummary
+              allHits = searchForMatrices params backgroundModel seqbs matrixSummary
               -- If we get multiple hits per probe, we simply take the one with the highest probability.
               groupedHits = groupBy (\(x,_)(y,_) -> x==y) $ sortBy (comparing fst) allHits
-              bestHits = map (maximumBy comparing fst) groupedHits
+              bestHits = map (maximumBy (comparing fst)) groupedHits
             in
-              if null matches
+              if null bestHits
               then
-                  return []
+                  return ()
               else
                   do
                     putStrLn $ showString ">" probe
-                    forM bestHits $ \(prob, matrix) ->
+                    forM_ bestHits $ \(matrix, prob) ->
                         putStrLn $ (showString matrix . showString " " . shows prob) ""
