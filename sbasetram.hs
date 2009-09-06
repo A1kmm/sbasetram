@@ -155,7 +155,7 @@ checkMatrixMatch params bs baseprobs bgsums start mat =
 
 logplus a b =
     let
-        c = if (abs a) > (abs b) then a else b
+        c = max a b
     in
       c + (log ((exp (a - c)) + (exp (b - c))))
 
@@ -193,8 +193,8 @@ options :: [OptDescr (ProgramOptions -> ProgramOptions)]
 options =
     [
       Option ['h'] ["help"] (NoArg (\opts -> opts {poshowHelp = True } )) "Displays this help message"
-    , Option ['p'] ["posterior-cutoff"] (ReqArg (\val -> \opts -> opts { poPosteriorCutoff = Just (read val) }) "DOUBLE") "Minimum value required for log posterior probability in order for data to be retained"
-    , Option ['0'] ["prior-prob"] (ReqArg (\val -> \opts -> opts { poPrior = Just (read val) }) "DOUBLE") "The prior log-probability that a given transcription factor is at any particular site"
+    , Option ['p'] ["posterior-cutoff"] (ReqArg (\val -> \opts -> opts { poPosteriorCutoff = Just (read val) }) "DOUBLE") "Minimum value required for posterior probability in order for data to be retained"
+    , Option ['0'] ["prior-prob"] (ReqArg (\val -> \opts -> opts { poPrior = Just (read val) }) "DOUBLE") "The prior probability that a given transcription factor is at any particular site"
     , Option ['M'] ["matrix-file"] (ReqArg (\val -> \opts -> opts { pofastaFile = Just val }) "FILE") "File contain TF matrices"
     , Option ['f'] ["probe-file"] (ReqArg (\val -> \opts -> opts { pofsaFile = Just val }) "FILE") "File containing all probe sequences"
     ]
@@ -223,10 +223,18 @@ main = do
             ProgramOptions { pofsaFile = Nothing } ->
                 commandLineInfo "FSA (sequence) file not specified"
             ProgramOptions { pofastaFile = Just fasf, pofsaFile = Just fsaf, poPosteriorCutoff = Just postco, poPrior = Just prior } ->
-                sbasetramMain fasf fsaf (Params prior postco (log (1.0 - (exp prior))))
+                sbasetramMain fasf fsaf (Params (log prior) (log postco) (log (1.0 - prior)))
     (_, _, e) -> commandLineInfo $ "Command line parse error:\n" ++ (concat e)
 -- "/home/andrew/Documents/TSM/matrices.fasta"
 -- "/home/andrew/tgz/yeast_Young_6k.fsa"
+
+showsNegative v =
+    if v < 0 then
+        shows v
+    else if v == 0 then
+             showString "-0"
+         else
+             error "Expected negative number"
 
 sbasetramMain fastaFile fsaFile params =
     do
@@ -250,4 +258,4 @@ sbasetramMain fastaFile fsaFile params =
                   do
                     putStrLn $ showString ">" probe
                     forM_ bestHits $ \(matrix, prob) ->
-                        putStrLn $ (showString matrix . showString " " . shows prob) ""
+                        putStrLn $ (showString matrix . showString " " . showsNegative prob) ""
