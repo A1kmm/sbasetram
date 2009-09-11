@@ -1,10 +1,11 @@
 {-# LANGUAGE RankNTypes,BangPatterns #-}
+import Prelude hiding (sum, map, (++), concatMap, concatMap, concat, null)
 import qualified Data.Array.Unboxed as A
 import Data.Array.IArray ((!))
 import Data.Maybe
 import TSMParser
 import FSAParser
-import Data.List
+import Data.List.Stream
 import Control.Monad
 import qualified Data.ByteString as B
 import System.Console.GetOpt
@@ -16,12 +17,7 @@ import qualified Data.STRef.Strict as S
 import Data.Word
 import Data.Ord
 
-data TSMMatrix = TSMMatrix {
-      -- First index is the base, second is the position from start of motif...
-      matrixFreqs :: A.UArray (Int, Int) Double,
-      -- Note: log transformed
-      matrixProbs :: A.UArray (Word8, Int) Double
-    }
+type TSMMatrix = A.UArray (Word8, Int) Double
 
 prependProbsOneEntry freqs n i l j =
     let
@@ -42,11 +38,7 @@ computeProbs freqs =
     in
       A.array ((0, 0), (3, n)) $ (foldl' (prependProbsOnePosition freqs) [] [0..n])
 
-summariseMatrix freqs =
-    TSMMatrix {
-                matrixFreqs = freqs,
-                matrixProbs = computeProbs freqs
-              }
+summariseMatrix freqs = computeProbs freqs
 
 summariseMatrices = map (\(n, m) -> (n, summariseMatrix m))
 
@@ -120,11 +112,11 @@ computeBackgroundProbabilities probes =
 buildPartialSumsForSeq :: A.UArray (Word8, Word8) Double -> B.ByteString -> A.UArray Int Double
 buildPartialSumsForSeq bgcond seqn =
     let
-        n = B.length seqn
+        !n = B.length seqn
     in
       A.array (0, n-1) $ snd (
-                              foldl' (\(s, l) i ->
-                                          let s' = s + (bgcond ! ((B.index seqn (i-1)), (B.index seqn i)))
+                              foldl' (\(!s, !l) !i ->
+                                          let !s' = s + (bgcond ! ((B.index seqn (i-1)), (B.index seqn i)))
                                           in (s', (i, s'):l)
                                      ) (0, [(0, 0)]) [1..(n-1)]
                              )
@@ -138,14 +130,14 @@ searchForMatrices params (baseprobs, condprobs) bs mats =
       concatMap (checkForMatchingMatricesAt params baseprobs bgsums bs mats) [0..(l-1)]
 
 checkForMatchingMatricesAt :: Params -> A.UArray Word8 Double -> A.UArray Int Double -> B.ByteString -> [(String, TSMMatrix)] -> Int -> [(String, Double)]
-checkForMatchingMatricesAt params baseprobs bgsums bs mats start =
+checkForMatchingMatricesAt !params !baseprobs !bgsums !bs !mats !start =
    mapMaybe (\(i,m) -> liftM ((,)i) (checkMatrixMatch params bs baseprobs bgsums start m)) mats
 
 checkMatrixMatch :: Params -> B.ByteString -> A.UArray Word8 Double -> A.UArray Int Double -> Int -> TSMMatrix -> Maybe Double
-checkMatrixMatch params bs baseprobs bgsums start mat =
+checkMatrixMatch !params !bs !baseprobs !bgsums !start !mat =
     let
         lrem = (B.length bs) - start
-        (_, (_, lmat)) = A.bounds (matrixFreqs mat)
+        (_, (_, lmat)) = A.bounds mat
     in
       if lmat < lrem
       then
@@ -159,13 +151,13 @@ logplus a b =
     in
       c + (log ((exp (a - c)) + (exp (b - c))))
 
-unsafeCheckMatrixMatch params bs baseprobs bgsums start mat lmat =
+unsafeCheckMatrixMatch !params !bs _ _ {- !baseprobs !bgsums -} !start !mat !lmat =
     let
-        pdgivenh1 = sum (map (\i -> (matrixProbs mat) ! (B.index bs (i + start), i)) [0..lmat])
-        pdgivenh0 = bgsums!(start + lmat) - bgsums!start + baseprobs!(B.index bs start)
-        pdandh1 = pdgivenh1 + (logPriorProb params)
-        pdandh0 = pdgivenh0 + (logPriorNotProb params)
-        posterior = pdandh1 - (pdandh1 `logplus` pdandh0)
+        !pdgivenh1 = sum (map (\ !i -> mat ! (B.index bs (i + start), i)) [0..lmat])
+        !pdgivenh0 = (log 0.25) * (fromIntegral $ lmat + 1) -- bgsums!(start + lmat) - bgsums!start + baseprobs!(B.index bs start)
+        !pdandh1 = pdgivenh1 + (logPriorProb params)
+        !pdandh0 = pdgivenh0 + (logPriorNotProb params)
+        !posterior = pdandh1 - (pdandh1 `logplus` pdandh0)
     in
       if posterior >= (logPosteriorCutoff params)
       then
@@ -174,9 +166,9 @@ unsafeCheckMatrixMatch params bs baseprobs bgsums start mat lmat =
           Nothing
 
 data Params = Params {
-      logPriorProb :: Double,
-      logPosteriorCutoff :: Double,
-      logPriorNotProb :: Double
+      logPriorProb :: !Double,
+      logPosteriorCutoff :: !Double,
+      logPriorNotProb :: !Double
 }
 
 data ProgramOptions = ProgramOptions {
@@ -209,7 +201,7 @@ main = do
   case getOpt RequireOrder options args of
     (o,_,[]) ->
         let
-            opts = foldl (\opt -> \f -> f opt) defaultOptions o
+            opts = foldl' (\opt -> \f -> f opt) defaultOptions o
         in
           case opts of
             ProgramOptions { poshowHelp = True } ->
@@ -246,10 +238,11 @@ sbasetramMain fastaFile fsaFile params =
         in
           forM_ fsaData $ \(probe, seqbs) ->
           let
-              allHits = searchForMatrices params backgroundModel seqbs matrixSummary
+              allHits = (searchForMatrices params backgroundModel seqbs matrixSummary) ++
+                        (searchForMatrices params backgroundModel (reverseComplement seqbs) matrixSummary)
               -- If we get multiple hits per probe, we simply take the one with the highest probability.
               groupedHits = groupBy (\(x,_)(y,_) -> x==y) $ sortBy (comparing fst) allHits
-              bestHits = map (maximumBy (comparing fst)) groupedHits
+              bestHits = map (maximumBy (comparing snd)) groupedHits
             in
               if null bestHits
               then
