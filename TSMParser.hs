@@ -3,6 +3,7 @@ where
   import Text.ParserCombinators.Parsec
   import Data.Char
   import qualified Data.Array.Unboxed as A
+  import Control.Monad
 
   loadTRANSFACMatrices :: String -> IO [(String, A.UArray (Int, Int) Double)]
   loadTRANSFACMatrices filename = do
@@ -18,14 +19,14 @@ where
   processMatrices matrices =
       (
        do
-         (maybeName, matrixRaw) <- processMatrix (Nothing, [])
+         (maybeName, maybeMatrixRaw) <- processMatrix (Nothing, [])
          string "//\n"
-         processMatrices $ case maybeName of
-                             Nothing -> matrices
-                             Just name -> (name, buildMatrix matrixRaw):matrices
+         processMatrices $ case (maybeName, maybeMatrixRaw) of
+                             (Just name, Just matrixRaw) -> (name, buildMatrix matrixRaw):matrices
+                             _ -> matrices
       ) <|> (eof >> return matrices)
 
-  processMatrix :: (Maybe String, [((Int, Int), Double)]) -> Parser (Maybe String, [((Int,Int),Double)])
+  processMatrix :: (Maybe String, [((Int, Int), Double)]) -> Parser (Maybe String, Maybe [((Int,Int),Double)])
   processMatrix x@(name, values) =
       (
        do
@@ -40,16 +41,28 @@ where
        do
          entry <- try $ do
                     char 'M'
-                    processMatrixEntry values
-         processMatrix $ (name, entry)
+                    processMatrixEntry (Just values)
+         case entry of
+           Just matrixEntry ->
+               processMatrix $ (name, matrixEntry)
+           Nothing -> consumeMatrix
       ) <|>
       (
        do
          alphaNum
          alphaNum
-         manyTill (noneOf "\n") (char '\n') -- anyToken -- (noneOf "\n") (char '\n')
+         manyTill (noneOf "\n") (char '\n')
          processMatrix x
-      ) <|> (return x)
+      ) <|> (return (name, Just values))
+
+  consumeMatrix =
+      (
+       do
+         alphaNum
+         alphaNum
+         manyTill (noneOf "\n") (char '\n')
+         consumeMatrix
+       ) <|> (return $ (Nothing, Just []))
 
   nucleotideCode =
       (char 'A' >> return 0) <|>
@@ -63,20 +76,19 @@ where
         char ' '
         processMatrixValues base 0 values
   
-  parseFloat l =
+  parseIntegerOrIgnoreFloat l =
       do
         (sign, ls) <- parseOptionalSign l
         (whole, lw) <- parseNumber ls 0.0
         case lw of
-          0 ->  return $ sign * whole
+          0 ->  return $ Just (sign * whole)
           _ ->
-                do
-                  (frac, _) <- (
-                                do
-                                  char '.'
-                                  parseFracNumber (lw - 1) 0.0 0.1
-                               ) <|> return (0.0, 0)
-                  return $ sign * (whole + frac)
+              (
+               do
+                 char '.'
+                 parseFracNumber (lw - 1) 0.0 0.1
+                 return $ Nothing {- sign * (whole + frac) -}
+              ) <|> (return $ Just (sign * whole))
   
   parseOptionalSign l =
       (char '+' >> return (1.0, l - 1)) <|> (char '-' >> (return $ (-1.0, l - 1))) <|> (return (1.0, l))
@@ -108,6 +120,10 @@ where
       (
        do
          v <- many $ char ' '
-         val <- parseFloat (5 - (length v))
-         processMatrixValues base (pos + 1) (((base, pos), val):values)
+         maybeval <- parseIntegerOrIgnoreFloat (5 - (length v))
+         case (values, maybeval) of
+           (Just vs, Just val) ->
+               processMatrixValues base (pos + 1) (Just (((base, pos), val):vs))
+           _ ->
+               processMatrixValues base (pos + 1) Nothing
       )
