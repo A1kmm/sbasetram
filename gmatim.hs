@@ -169,7 +169,8 @@ gmatimMain fastaFile fsaFile cutoffs =
         in
           forM_ fsaData $ \(probe, seqbs) ->
           let
-              matches = nub (map fst $ searchForMatrices cutoffs seqbs matrixSummary)
+              matches = nub (map fst $ (searchForMatrices cutoffs seqbs matrixSummary) ++
+                                       (searchForMatrices cutoffs (reverseComplement seqbs) matrixSummary))
             in
               if null matches
               then
