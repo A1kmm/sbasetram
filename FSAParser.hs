@@ -1,4 +1,4 @@
-module FSAParser (loadFSAData)
+module FSAParser (loadFSAData, reverseComplement)
 where
   import Text.ParserCombinators.Parsec
   import qualified Data.ByteString as B
@@ -32,3 +32,17 @@ where
          seqData <- manyTill nucleotideCode (char '\n')
          processSequence $ (B.pack seqData):seqs
       ) <|> (return seqs)
+
+  reverseComplement bs =
+      B.pack $ map (\ i ->
+                        case (B.index bs i)
+                        of
+                          0 -> 3 -- A => T
+                          1 -> 2 -- G => C
+                          2 -> 1 -- C => G
+                          3 -> 0 -- T => A
+                          _ -> error "Invalid base passed to reverseComplement"
+                   ) [l,(l-1)..0]
+          where
+            l = (B.length bs) - 1
+
