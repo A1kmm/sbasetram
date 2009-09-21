@@ -44,11 +44,13 @@ oneProbeParser =
       l <- tfListParser []
       return (name, l)
 
+anyFloat l = liftM (either fromIntegral id) (naturalOrFloat l)
+
 tfListParser l =
     (
      do
        tf <- manyTill (noneOf ">\n") (try $ string " -")
-       prob <- float haskell
+       prob <- anyFloat haskell
        tfListParser $ (tf, -prob):l
     ) <|> (return l)
 
