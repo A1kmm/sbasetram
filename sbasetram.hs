@@ -1,5 +1,5 @@
 {-# LANGUAGE RankNTypes,BangPatterns #-}
-import Prelude hiding (sum, map, (++), concatMap, concatMap, concat, null)
+import Prelude hiding (sum, map, (++), concatMap, concatMap, concat, null, head, tail)
 import qualified Data.Array.Unboxed as A
 import Data.Array.IArray ((!))
 import Data.Maybe
@@ -95,14 +95,17 @@ computeBackgroundProbabilities :: [(String, B.ByteString)] -> (A.UArray Word8 Do
 computeBackgroundProbabilities probes =
     let
         (bases, nbases, transitions, ntransitions) = S.runST $ countBackground probes
-        baseprobs = (A.amap ((/ (fromIntegral nbases)) . fromIntegral) bases)
+        baseprobs = (A.amap (log . (/ (fromIntegral nbases)) . fromIntegral) bases)
         condprobs = A.array ((0, 0), (3,3)) $
                       foldl' (\l i ->
                                   (foldl' (\l' j ->
                                             ((i,j),
-                                            log ((fromIntegral (transitions!(i, j))) /
-                                                 (fromIntegral ntransitions) /
-                                                 (baseprobs!i))):l'
+                                             (
+                                              log ((fromIntegral (transitions!(i, j))) /
+                                                   (fromIntegral ntransitions)) -
+                                              (baseprobs!i)
+                                             )
+                                            ):l'
                                           ) l [0..3]
                                   )
                              ) [] [0..3]
@@ -121,11 +124,25 @@ buildPartialSumsForSeq bgcond seqn =
                                      ) (0, [(0, 0)]) [1..(n-1)]
                              )
 
+ 
+buildPartialSums0OrderForSeq :: A.UArray Word8 Double -> B.ByteString -> A.UArray Int Double
+buildPartialSums0OrderForSeq bgprob seqn =
+    let
+        !n = B.length seqn
+    in
+      A.array (0, n) $ snd (
+                            foldl' (\(!s, !l) !i ->
+                                        let !s' = s + bgprob!(B.index seqn i)
+                                        in (s', (i + 1, s'):l)
+                                   ) (0, [(0,0)]) [0..(n-1)]
+                           )
+
+
 searchForMatrices :: Params -> (A.UArray Word8 Double, A.UArray (Word8, Word8) Double) -> B.ByteString -> [(String, TSMMatrix)] -> [(String, Double)]
 searchForMatrices params (baseprobs, condprobs) bs mats =
     let
         l = B.length bs
-        bgsums = buildPartialSumsForSeq condprobs bs
+        bgsums = {- buildPartialSums0OrderForSeq baseprobs bs -} buildPartialSumsForSeq condprobs bs
     in
       concatMap (checkForMatchingMatricesAt params baseprobs bgsums bs mats) [0..(l-1)]
 
@@ -151,10 +168,17 @@ logplus a b =
     in
       c + (log ((exp (a - c)) + (exp (b - c))))
 
-unsafeCheckMatrixMatch !params !bs _ _ {- !baseprobs !bgsums -} !start !mat !lmat =
+-- Computes the probability that at least one of two independent events occurs.
+logProbAtLeastOne logp1 logp2 =
+    let
+        c = max logp1 logp2
+    in
+      c + (log (exp (logp1 - c)) + (exp (logp2 - c)) - (exp (logp1 + logp2 - c)))
+
+unsafeCheckMatrixMatch !params !bs !baseprobs !bgsums !start !mat !lmat =
     let
         !pdgivenh1 = sum (map (\ !i -> mat ! (B.index bs (i + start), i)) [0..lmat])
-        !pdgivenh0 = (log 0.25) * (fromIntegral $ lmat + 1) -- bgsums!(start + lmat) - bgsums!start + baseprobs!(B.index bs start)
+        !pdgivenh0 = bgsums!(start + lmat) - bgsums!start + baseprobs!(B.index bs start) -- bgsums!(start + lmat + 1) - bgsums!start -- (log 0.25) * (fromIntegral $ lmat + 1)
         !pdandh1 = pdgivenh1 + (logPriorProb params)
         !pdandh0 = pdgivenh0 + (logPriorNotProb params)
         !posterior = pdandh1 - (pdandh1 `logplus` pdandh0)
@@ -223,10 +247,8 @@ main = do
 showsNegative v =
     if v < 0 then
         shows v
-    else if v == 0 then
-             showString "-0"
-         else
-             error "Expected negative number"
+    else
+        showString "-0"
 
 sbasetramMain fastaFile fsaFile params =
     do
@@ -243,6 +265,11 @@ sbasetramMain fastaFile fsaFile params =
               -- If we get multiple hits per probe, we simply take the one with the highest probability.
               groupedHits = groupBy (\(x,_)(y,_) -> x==y) $ sortBy (comparing fst) allHits
               bestHits = map (maximumBy (comparing snd)) groupedHits
+              -- bestHits = map (\h -> (
+              --                        (fst . head) h,
+              --                         foldl' (\p1 (_,p2) -> logProbAtLeastOne p1 p2) ((snd . head) h) (tail h)
+              --                       )
+              --                ) groupedHits
             in
               if null bestHits
               then
