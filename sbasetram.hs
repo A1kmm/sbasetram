@@ -178,7 +178,7 @@ logProbAtLeastOne logp1 logp2 =
 unsafeCheckMatrixMatch !params !bs !baseprobs !bgsums !start !mat !lmat =
     let
         !pdgivenh1 = sum (map (\ !i -> mat ! (B.index bs (i + start), i)) [0..lmat])
-        !pdgivenh0 = bgsums!(start + lmat) - bgsums!start + baseprobs!(B.index bs start) -- bgsums!(start + lmat + 1) - bgsums!start -- (log 0.25) * (fromIntegral $ lmat + 1)
+        !pdgivenh0 = {- bgsums!(start + lmat) - bgsums!start + baseprobs!(B.index bs start) -- bgsums!(start + lmat + 1) - bgsums!start -- -} (log 0.25) * (fromIntegral $ lmat + 1)
         !pdandh1 = pdgivenh1 + (logPriorProb params)
         !pdandh0 = pdgivenh0 + (logPriorNotProb params)
         !posterior = pdandh1 - (pdandh1 `logplus` pdandh0)
