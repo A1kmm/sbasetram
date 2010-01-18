@@ -1,0 +1,30 @@
+Name:                sbasetram
+Version:             0.0
+Description:         Simple implementation of the Bayesian Search for Transcriptional Motifs (BaSeTraM)
+License:             OtherLicense
+License-file:        COPYING
+Author:              Andrew Miller
+Maintainer:          ak.miller@auckland.ac.nz
+Build-Type:          Simple
+Cabal-Version:       >=1.2
+
+Executable sbasetram
+  Main-is:           sbasetram.hs
+  Build-Depends:     base >= 3 && < 5,
+                     array,
+                     hmatrix,
+                     bytestring,
+                     stream-fusion,
+                     parsec > 1 && < 2.2
+
+Executable gmatim
+  Main-is:           gmatim.hs
+  Build-Depends:     base >= 3 && < 5
+
+Executable BuildGeneList
+  Main-is:           BuildGeneList.hs
+  Build-Depends:     base >= 3 && < 5
+
+Executable pfilter
+  Main-is:           pfilter.hs
+  Build-Depends:     base >= 3 && < 5

@@ -9,3 +9,5 @@ gmatim
 sbasetram
 .hpc
 pfilter
+dist
+*.prof
