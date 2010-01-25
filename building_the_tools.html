@@ -1,0 +1,129 @@
+<html>
+  <head>
+    <title>Online supplement for Miller et. al. 2010</title>
+  </head>
+  <body>
+    <h1>Contents</h1>
+<ul>
+  <li><a href="#cbasetram">1. Installing and using CBaSeTraM</a></li>
+  <li><a href="#sbasetram">2. Installing and using SBaSeTraM and GMATIM</a></li>
+  <li><a href="#motocse">3. Installing and using MOTOCSE</a></li>
+</ul>
+    <a name="cbasetram"></a>
+    <h1>1. Installing and using CBaSeTraM</h1>
+    <p>
+CBaSeTraM requires the follow dependencies to run:
+<ul>
+  <li>A C compiler. gcc 4.4.1 is known to work, but any standards compliant compiler with which all of Boost can be compiled is likely to work.</li>
+  <li><a href="http://www.boost.org/">Boost</a>. Boost 1.39 is known to work, and other recent versions of Boost are also expected to work.
+You may need to set the BOOST_ROOT environment variable, for example with:
+<pre>
+  export BOOST_ROOT=/usr/include/boost-1_39/
+</pre>
+In addition, Boost libraries corresponding to the headers need to be available in the library path in the form without version numbers in them. Depending on your OS vendor, you may need to create symbolic links to satisfy this requirement.
+  </li>
+  <li>Specifically, the Boost regex library is required. This is not built automatically on some platforms (such as with IBM's XL C++ compiler); you will need to use a different compiler if Boost Regex is not supported on your platform.</li>
+  <li>MPI builds only: You also need an MPI library installed, and to build the Boost MPI library. OpenMPI version 1.3 is known to work, but other standards compliant MPI libraries should also work.</li>
+  <li><a href="http://www.cmake.org/">CMake</a> version 2.6; newer versions may also work.</li>
+  <li><a href="http://subversion.tigris.org">Subversion</a> is required to obtain source code for parsegenbank.</li>
+  <li><a href="http://git-scm.com/">Git</a> is required to obtain the CBaSeTraM source code.</li>
+  <li><a href="http://code.google.com/p/parsegenbank/">parsegenbank</a>. You can get and build the source code using:
+<pre>
+  svn checkout http://parsegenbank.googlecode.com/svn/trunk/ parsegenbank
+  cd parsegenbank
+  cmake .
+  make
+</pre>
+  Be aware that the CBaSeTraM build system assumes that parsegenbank and CBaSeTraM are in different subdirectories of the same parent directory.</li>
+</ul>
+    </p>
+    <p>
+Once all dependencies have been installed, you can install CBaSeTraM as follows:
+<pre>
+  git clone git://github.com/A1kmm/basetram.git cbasetram
+  cd cbasetram
+  cmake .
+  make
+</pre>
+    </p>
+<p>
+Now that you have compiled CBaSeTraM, you can run it as follows:
+<pre>
+  ./basetram --matrices path_to_transfac_matrices_file --genbank directory_containing_GenBank_GBK_files --outdir directory_to_write_output_files_to
+</pre>
+(with path_to_transfac_matrices_file, directory_containing_GenBank_GBK_files, and directory_to_write_output_files_to). 
+GenBank will create a series of directories in the output directory you supply, one for each chromosome, and in that directory it will place a GenBank formatted file for each contig, containing the locations of putative binding sites. For example, consider this sample output:
+<pre>
+  LOCUS       NW_928038              12779 bp    DNA     linear   CON 29-AUG-2006
+  FEATURES             Location/Qualifiers
+       TFBS            419..441
+                       /probability="0.512925"
+                       /db_xref="TRANSFAC:M00207"
+       TFBS            complement(9930..9958)
+                       /probability="0.947929"
+                       /db_xref="TRANSFAC:M00144"
+</pre>
+The short contig NW_928038 had two transcription factor binding sites on it identified (using the default cut-off posterior probability of 0.5). The first is for the matrix M00207, on the (+) strand, from base-pair 419 to 441, and has a posterior probability of 0.513. The second is for matrix M00144, on the (-) strand, at base-pairs 9930-9958 (counted from the start of the + strand), with posterior probability 0.948.
+</p>
+<p>
+Note: If you want to build CBaSeTraM with MPI support, to enable searching in parallel, you need to edit BaSeTraM.cpp to remove the #define NON_MPI line from the top of the file. Then build CBaSeTraM (following instruction from your MPI library - for example, you will usually have to set an environment variable such as CXX=mpic++ prior to running cmake). You will also have to set up your MPI library to access your nodes.
+</p>
+    <a name="sbasetram"></a>
+    <h1>2. Installing and using SBaSeTraM and GMATIM</h1>
+<p>
+SBaSeTraM and GMATIM require that you have a working Haskell compiler and Cabal package system, as well as a number of Cabal packages from Hackage. We tested GHC 6.10.4; it is recommended that you use a 6.10.x version of GHC. You also need to install cabal-install; 0.6.4 is known to work, but any 0.6.x release should be sufficient.
+</p>
+<p>
+ The easiest way to install SBaSeTraM is to retrieve the SBaSeTraM source code, and then allow Cabal to download all the dependencies required from Hackage. To do this:
+</p>
+<pre>
+  git clone git://github.com/A1kmm/sbasetram.git sbasetram
+  cd sbasetram
+  cabal install
+</pre>
+<p>
+The above series of commands will install the following programs in ~/.cabal/bin:
+<ul>
+<li>sbasetram: As described in the paper.</li>
+<li>gmatim: As described in the paper.</li>
+<li>pfilter: Takes the output from sbasetram, and filters the results by posterior probability, producing an output compatible with that from GMATIM.</li>
+<li>BuildGeneList: Builds a list of all genes mentioned in usable TRANSFAC matrices, for use in downstream analysis.</li>
+</ul>
+</p>
+<p>A sample invocation of BuildGeneList, SBaSeTraM, and GMATIM, which can be used to reproduce the analysis in the paper, follows:</p>
+<pre>
+  ~/.cabal/bin/BuildGeneList -m path_to_TRANSFAC_TSM/matrices.fasta >tfs.list
+  ~/.cabal/bin/sbasetram -p 0.01 -0 0.001 -M path_to_TRANSFAC_TSM/matrices.fasta -f path_to_ChIPchip_data/yeast_Young_6k.fsa > sbasetram-hits.fast
+  ~/.cabal/bin/gmatim --matrix-file=path_to_TRANSFAC_TSM/matrices.fasta --probe-file=path_to_ChIPchip_data/yeast_Young_6k.fsa --css-cutoff=0.7 --mss-cutoff=0.75 >./hits.fasta
+</pre>
+<p>The use of pfilter will be demonstrated below alongside motocse.</p>
+    <a name="motocse"></a>
+    <h1>3. Installing and using MOTOCSE</h1>
+<p>
+MOTOCSE, or the Motif Occurrence Tool Comparison Suite, is a series of tools for comparing results from different transcription factor binding site identification programs, and was used in the paper. Like it SBaSeTraM, it requires a Haskell compiler (GHC 6.10.x recommended) and cabal-install to build. It can be built by following the below instruction (which may, depending on what is already installed, download other packages from Hackage).
+</p>
+
+<pre>
+  git clone git://github.com/A1kmm/motocse.git motocse
+  cd motocse
+  cabal install
+</pre>
+
+<p>Following the above instructions will create two additional binaries in ~/.cabal/bin: motocse, and which_different. The motocse program computes the true-positive, false-positive, true-negative, and false-negative rates, while which_different produces a gene-by-gene difference between the results from two programs. An example of the usage of the two programs follows (these examples also use pfilter from gmatim, and the results generated in the examples above).</p>
+
+<pre>
+  ~/.cabal/bin/motocse --include_tfs_file=tfs.list --prediction_file=hits.fasta --fsa_directory=directory_containing_ChIPchip_fsa_files
+  for pval in 0.01 0.02 0.03 0.04 0.05 0.06 0.07 0.08 0.09 0.1 0.15 0.2 0.25 0.3 0.35 0.4 0.45 0.5 0.55 0.6 0.65 0.7 0.75 0.8 0.85 0.9 0.95;
+  do
+    echo "P = $pval"; ~/.cabal/bin/pfilter -p $pval -s sbasetram-hits.fasta >/tmp/filtered.fasta;
+    ~/.cabal/bin/motocse --prediction_file=/tmp/filtered.fasta --include_tfs_file=tfs.list --fsa_directory=directory_containing_ChIPchip_fsa_files;
+  done
+
+  ~/.cabal/which_different directory_containing_ChIPchip_fsa_files tfs.list /tmp/filtered.fasta hits.fasta >/tmp/compare.txt
+  egrep "^[=]" /tmp/compare.txt | wc -l
+  egrep "^[+]" /tmp/compare.txt | wc -l
+</pre>
+
+  </body>
+</html>
+
